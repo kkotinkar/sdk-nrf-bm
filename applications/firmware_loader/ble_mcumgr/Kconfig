@@ -10,6 +10,46 @@ config APP_FIRMWARE_LOADER_BLE_DEVICE_NAME
 	string "Device name"
 	default "nRF_BM_MCUmgr"
 
+config APP_FIRMWARE_LOADER_IMAGE_DECRYPTION
+	bool "Decrypt MCUboot encrypted images after upload"
+	depends on NRF_SECURITY && BM_STORAGE
+	select PSA_WANT_ALG_ECDH
+	select PSA_WANT_ALG_HKDF
+	select PSA_WANT_ALG_HMAC
+	select PSA_WANT_ALG_CTR
+	select PSA_WANT_ALG_SHA_256
+	select PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_IMPORT
+	select PSA_WANT_KEY_TYPE_DERIVE
+	select PSA_WANT_KEY_TYPE_HMAC
+	select PSA_WANT_KEY_TYPE_AES
+	select PSA_WANT_ECC_MONTGOMERY_255
+	select PSA_WANT_AES_KEY_SIZE_128
+	help
+	  After an image has been uploaded to slot0, check whether it is encrypted (ECIES-X25519 key
+	  exchange, AES-128-CTR payload, HKDF and HMAC with SHA512/256) and decrypt it in place before
+	  rebooting into MCUboot. The decryption uses MCUboot's own code from
+	  bootloader/mcuboot/boot/bootutil. The algorithm parameters are fixed at build time and must
+	  match the imgtool options used when encrypting (--hmac-sha 512/256, 128 bit AES).
+
+if APP_FIRMWARE_LOADER_IMAGE_DECRYPTION
+
+config APP_FIRMWARE_LOADER_ENC_KEY_FILE
+	string "Device encryption private key (PEM, X25519)"
+	default "$(ZEPHYR_MCUBOOT_MODULE_DIR)/enc-x25519-priv.pem"
+	help
+	  Compiled into the firmware loader as enc_priv_key[], as MCUboot does. The default is the
+	  public MCUboot debug key and must not be used in production. Relative paths are relative to
+	  the firmware loader source directory.
+
+config APP_FIRMWARE_LOADER_ENC_CHUNK_SIZE
+	int "Size of the decryption work buffer in bytes"
+	default 512
+	range 16 4096
+	help
+	  Must be a multiple of 16.
+
+endif # APP_FIRMWARE_LOADER_IMAGE_DECRYPTION
+
 module=APP
 module-str=Bluetooth LE MCUmgr Sample
 source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"

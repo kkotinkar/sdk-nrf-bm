@@ -24,7 +24,8 @@
 
 #include <mgmt/mcumgr/grp/img_mgmt/img_mgmt_priv.h>
 
-LOG_MODULE_DECLARE(mcumgr_img_grp_data, CONFIG_MCUMGR_GRP_IMG_LOG_LEVEL);
+/* KK: Fixed to log module register to allow for extended module logging */
+LOG_MODULE_REGISTER(mcumgr_img_grp_data, CONFIG_MCUMGR_GRP_IMG_LOG_LEVEL);
 
 #define S0_START FIXED_PARTITION_ADDRESS(slot0_partition)
 #define S0_SIZE FIXED_PARTITION_SIZE(slot0_partition)

@@ -26,6 +26,10 @@
 #include <bm/storage/bm_rmem.h>
 #include <bm/storage/ble_rmem.h>
 
+#if CONFIG_APP_FIRMWARE_LOADER_IMAGE_DECRYPTION
+#include "enc_image.h"
+#endif
+
 LOG_MODULE_REGISTER(app, CONFIG_APP_LOG_LEVEL);
 
 BLE_ADV_DEF(ble_adv); /* BLE advertising instance */
@@ -327,6 +331,19 @@ int main(void)
 
 		k_cpu_idle();
 	}
+
+#if CONFIG_APP_FIRMWARE_LOADER_IMAGE_DECRYPTION
+	/* Reboot in any case: MCUboot rejects an invalid image and starts this loader again. */
+	LOG_INF("Checking slot0 image for encryption");
+	err = enc_image_decrypt_slot0();
+	if (err < 0) {
+		LOG_ERR("Image decryption failed, err %d", err);
+	} else if (err == ENC_IMAGE_DECRYPTED) {
+		LOG_INF("Image decrypted");
+	}
+
+	log_flush();
+#endif
 
 	sys_reboot(SYS_REBOOT_WARM);
 	return 0;
