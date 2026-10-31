@@ -21,12 +21,12 @@ extern "C" {
 #define ENC_IMAGE_ALREADY_PLAINTEXT 2
 
 /**
- * Decrypt the image in slot0 in place if it is an MCUboot encrypted image.
+ * In-place decrypt the image in slot0/app slot if it is a valid MCUboot encrypted image.
  *
- * Call after the image upload has completed and all writes have finished. The decryption is done
- * with MCUboot's bootutil code and the private key compiled in as enc_priv_key[]. An interruption
- * leaves a partly decrypted image: MCUboot rejects it at the next boot and starts the firmware
- * loader, which waits for a new upload.
+ * Hook after the image upload has completed and all writes have finished. The decryption is done
+ * with MCUboot's bootutil code and the private key from the key record at the end of the boot
+ * partition. An interruption leaves a partly decrypted image: MCUboot rejects it at the next boot
+ * and starts the firmware loader, which waits for a new upload.
  *
  * @retval ENC_IMAGE_DECRYPTED, ENC_IMAGE_NOT_ENCRYPTED or ENC_IMAGE_ALREADY_PLAINTEXT on success.
  * @retval -errno on failure.

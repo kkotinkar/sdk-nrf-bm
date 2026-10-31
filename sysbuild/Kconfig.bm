@@ -175,6 +175,23 @@ config BM_FIRMWARE_LOADER_IMAGE_PATH
 	help
 	  Source directory of firmware loader image.
 
+config BM_FIRMWARE_LOADER_IMAGE_DECRYPTION
+	bool "Decrypt MCUboot encrypted images in the firmware loader [EXPERIMENTAL]"
+	depends on BM_FIRMWARE_LOADER_BT_MCUMGR && SOC_SERIES_NRF54L
+	select EXPERIMENTAL
+	help
+	  Enables decryption of MCUboot encrypted images (ECIES-X25519) in the firmware loader after
+	  an upload. The device private key is written to the end of the boot partition as part of
+	  production.hex.
+
+config BM_FIRMWARE_LOADER_ENC_KEY_FILE
+	string "Device encryption private key (PEM, X25519)"
+	depends on BM_FIRMWARE_LOADER_IMAGE_DECRYPTION
+	help
+	  Required when image decryption is enabled, the build fails without it. Absolute path, or a
+	  path relative to the application directory. The matching public key is used when
+	  encrypting the application image (CONFIG_MCUBOOT_ENCRYPTION_KEY_FILE).
+
 endif
 
 endif

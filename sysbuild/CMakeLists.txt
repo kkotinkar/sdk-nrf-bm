@@ -146,6 +146,10 @@ function(${SYSBUILD_CURRENT_MODULE_NAME}_pre_cmake)
 
       set_config_bool(${SB_CONFIG_BM_FIRMWARE_LOADER_IMAGE_NAME} CONFIG_MCUBOOT_APPLICATION_FIRMWARE_UPDATER y)
 
+      if(SB_CONFIG_BM_FIRMWARE_LOADER_IMAGE_DECRYPTION)
+        set_config_bool(${SB_CONFIG_BM_FIRMWARE_LOADER_IMAGE_NAME} CONFIG_APP_FIRMWARE_LOADER_IMAGE_DECRYPTION y)
+      endif()
+
       # MCUboot firmware loader entrance mode selection
       if(SB_CONFIG_BM_BOOTLOADER_MCUBOOT_FIRMWARE_LOADER_ENTRANCE_BOOT_MODE)
         set_config_bool(mcuboot CONFIG_BOOT_FIRMWARE_LOADER_BOOT_MODE y)
@@ -326,6 +330,50 @@ function(${SYSBUILD_CURRENT_MODULE_NAME}_post_cmake)
         endif()
       endif()
     endforeach()
+
+    if(SB_CONFIG_BM_FIRMWARE_LOADER_IMAGE_DECRYPTION)
+      # Device encryption key record, placed at the end of the boot partition
+      if("${SB_CONFIG_BM_FIRMWARE_LOADER_ENC_KEY_FILE}" STREQUAL "")
+        message(FATAL_ERROR "SB_CONFIG_BM_FIRMWARE_LOADER_IMAGE_DECRYPTION requires "
+                "SB_CONFIG_BM_FIRMWARE_LOADER_ENC_KEY_FILE, the path of the device private key (PEM, X25519).")
+      endif()
+
+      set(enc_key_file ${SB_CONFIG_BM_FIRMWARE_LOADER_ENC_KEY_FILE})
+
+      if(NOT IS_ABSOLUTE ${enc_key_file})
+        set(enc_key_file ${APP_DIR}/${enc_key_file})
+      endif()
+
+      if(NOT EXISTS ${enc_key_file})
+        message(FATAL_ERROR "Device encryption key file not found: ${enc_key_file}")
+      endif()
+
+      if(enc_key_file STREQUAL "${ZEPHYR_MCUBOOT_MODULE_DIR}/enc-x25519-priv.pem")
+        message(WARNING "Using the default MCUboot encryption key, it is for debug use only and is not secure!")
+      endif()
+
+      set(enc_key_hex ${CMAKE_BINARY_DIR}/enc_key.hex)
+      set(mcuboot_hex ${mcuboot_binary_dir}/zephyr/${mcuboot_kernel_bin_name}.hex)
+
+      add_custom_command(OUTPUT ${enc_key_hex}
+        COMMAND
+        ${PYTHON_EXECUTABLE}
+        ${ZEPHYR_NRF_BM_MODULE_DIR}/scripts/generate_enc_key.py
+        --build-dir ${CMAKE_BINARY_DIR}
+        --loader-dir ${${SB_CONFIG_BM_FIRMWARE_LOADER_IMAGE_NAME}_binary_dir}
+        --mcuboot-hex ${mcuboot_hex}
+        --key-file ${enc_key_file}
+        --output ${enc_key_hex}
+        DEPENDS ${dependency_targets} ${mcuboot_hex} ${enc_key_file}
+      )
+
+      add_custom_target(enc_key_generation
+        ALL
+        DEPENDS ${enc_key_hex}
+      )
+
+      list(APPEND production_files ${enc_key_hex})
+    endif()
 
     add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/production.hex
       COMMAND

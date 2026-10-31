@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  */
 
+#define _DEFAULT_SOURCE
 #include <errno.h>
 #include <string.h>
 #include <zephyr/kernel.h>
@@ -21,6 +22,7 @@
 #include <bootutil_priv.h>
 
 #include "enc_image.h"
+#include "enc_image_key.h"
 
 LOG_MODULE_REGISTER(enc_image, CONFIG_APP_LOG_LEVEL);
 
@@ -35,7 +37,7 @@ LOG_MODULE_REGISTER(enc_image, CONFIG_APP_LOG_LEVEL);
  *  - boot_enc_set_key(), boot_enc_decrypt(), boot_enc_zeroize()  encrypted.c
  *
  * This file adds what MCUboot does not provide here: the decision whether the payload really needs
- * decrypting, and the write loop through bm_storage, which is the SoftDevice aware flash path.
+ * decrypting, and the write loop through bm_storage, which is the SoftDevice aware flash/NVM backend.
  */
 
 #define SLOT0_START FIXED_PARTITION_ADDRESS(slot0_partition)
@@ -45,8 +47,42 @@ LOG_MODULE_REGISTER(enc_image, CONFIG_APP_LOG_LEVEL);
 
 #define WRITE_TIMEOUT_MS 2000
 
+#define ENC_KEY_RECORD_ADDR                                                                        \
+	(FIXED_PARTITION_ADDRESS(boot_partition) + FIXED_PARTITION_SIZE(boot_partition) -          \
+	 ENC_KEY_AREA_SIZE)
+
+	 /* BOOT_ENC_BLOCK_SIZE is 16 bytes, one AES Block defined in aes_ctr.h of MCUBoot */
 BUILD_ASSERT(CONFIG_APP_FIRMWARE_LOADER_ENC_CHUNK_SIZE % BOOT_ENC_BLOCK_SIZE == 0,
 	     "Chunk size must be a multiple of the AES block size");
+BUILD_ASSERT(ENC_KEY_AREA_SIZE % 16 == 0 && ENC_KEY_AREA_SIZE > sizeof(struct enc_key_record) &&
+	     ENC_KEY_AREA_SIZE <= FIXED_PARTITION_SIZE(boot_partition),
+	     "Key area must be 16 byte aligned and inside the boot partition");
+
+/*
+ * encrypted_psa.c reads the private key through this symbol, which MCUboot defines in
+ * boot/zephyr/keys.c. Here it points at the key record in RRAM/NVM.
+ */
+const struct bootutil_key bootutil_enc_key = {
+	.key = (uint8_t *)(ENC_KEY_RECORD_ADDR + offsetof(struct enc_key_record, der)),
+	.len = (unsigned int *)(ENC_KEY_RECORD_ADDR + offsetof(struct enc_key_record, len)),
+};
+
+static int enc_key_record_check(void)
+{
+	const struct enc_key_record *rec = (const struct enc_key_record *)ENC_KEY_RECORD_ADDR;
+
+	if (rec->magic != ENC_KEY_RECORD_MAGIC) {
+		LOG_ERR("No encryption key record at %p", rec);
+		return -EACCES;
+	}
+
+	if (rec->len == 0 || rec->len > ENC_KEY_AREA_SIZE - sizeof(*rec)) {
+		LOG_ERR("Invalid encryption key length %u", rec->len);
+		return -EACCES;
+	}
+
+	return 0;
+}
 
 /* Flash area of slot0 for the bootutil functions, as in MCUboot's firmware_loader_bm.c. */
 static const struct flash_area slot0_area = {
@@ -163,11 +199,19 @@ int enc_image_decrypt_slot0(void)
 		return ENC_IMAGE_NOT_ENCRYPTED;
 	}
 
-	/* The key size is fixed at build time, as in MCUboot. */
+	/* The AES 128 key size is fixed at build time. 
+	*  Reject when AES-256 flag is set, and reject when AES-128 flag is not set.
+	*/
 	if ((hdr.ih_flags & IMAGE_F_ENCRYPTED_AES256) != 0 ||
 	    (hdr.ih_flags & IMAGE_F_ENCRYPTED_AES128) == 0) {
 		LOG_ERR("Unsupported encryption, flags %#x", hdr.ih_flags);
 		return -ENOTSUP;
+	}
+
+	/* The key record is written at provisioning time, check it before the key exchange. */
+	rc = enc_key_record_check();
+	if (rc) {
+		return rc;
 	}
 
 	/* Writes are done in whole blocks, and the nonce is derived from the block index. */
@@ -181,15 +225,15 @@ int enc_image_decrypt_slot0(void)
 
 	/*
 	 * Key exchange, all in boot_enc_load() and boot_decrypt_key():
-	 *  1. find the ENC TLV, it holds the ephemeral public key, the MAC tag and the wrapped
-	 *     AES key
-	 *  2. import the device private key, enc_priv_key[], into PSA
-	 *  3. ECDH of the device key and the ephemeral public key gives the shared secret
-	 *  4. HKDF-SHA512 of the shared secret, with info "MCUBoot_ECIES_v1", gives the key
+	 *  1. find the ENC TLV (0x33 for SHA256, 0x34 for SHA512), 
+	 *     it holds the ephemeral public key, the MAC tag and the wrapped AES key
+	 *  2. import the device private key from the key record, bootutil_enc_key, into PSA functions
+	 *  3. ECDH of the device key and the ephemeral build public key gives the shared secret
+	 *  4. HKDF-SHA256/512 of the shared secret, with info "MCUBoot_ECIES_v1", gives the key
 	 *     encryption key and the HMAC key
 	 *  5. import the HMAC key and verify the MAC tag over the wrapped key
 	 *  6. import the key encryption key and unwrap the AES key with AES-CTR
-	 * The AES key that encrypts the image payload ends up in bs.enckey.
+	 * 	The AES key that decrypts the image payload ends up in bs.enckey.
 	 */
 	rc = boot_enc_load(&state, BOOT_SLOT_PRIMARY, &hdr, &slot0_area, &bs);
 	if (rc != 0) {
@@ -206,16 +250,16 @@ int enc_image_decrypt_slot0(void)
 	}
 
 	/*
-	 * The encrypted flag is also set in an image that is not encrypted, for example the one
-	 * programmed with the production image. Decrypt the first block in RAM and continue only
-	 * if it is a vector table, so nothing is written for such an image.
+	 * The encrypted image flag may also be set in for an image that is decrypted already, for example the one
+	 * programmed with the production.hex image. Decrypt the first block in SRAM and continue only
+	 * if it is a valid vector table.
 	 */
 	rc = flash_area_read(&slot0_area, payload_off, first_block, sizeof(first_block));
 	if (rc) {
 		rc = -EIO;
 		goto out;
 	}
-
+	/* Decrypt the first block into SRAM to check if the image is already plaintext. */
 	boot_enc_decrypt(enc, 0, sizeof(first_block), 0, first_block);
 
 	if (!vector_table_plausible(first_block)) {
@@ -248,7 +292,8 @@ int enc_image_decrypt_slot0(void)
 	rc = ENC_IMAGE_DECRYPTED;
 out:
 	boot_enc_zeroize(BOOT_CURR_ENC(&state));
-	memset(&bs, 0, sizeof(bs));
+	/* Zeroize encryption key in SRAM */
+	explicit_bzero(&bs, sizeof(bs));
 
 	return rc;
 }
